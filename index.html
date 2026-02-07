@@ -384,18 +384,15 @@
     // ==========================
     // AUDIO (iOS unlock)
     // ==========================
-    // ✅ ya no "warmUp play/pause" de todos los audios
+    // ✅ desbloqueo estable sin “warmUp play/pause” de todos los audios
     async function unlockAudio(){
       if (audioUnlocked) return;
       audioUnlocked = true;
 
-      // Preferido: AudioContext (desbloquea salida de audio con el gesto)
       try{
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === "suspended") await audioCtx.resume();
-      }catch(_){
-        // fallback: no hacemos warmUp agresivo; el primer play real será countdown
-      }
+      }catch(_){}
     }
 
     function stopAudio(a){
@@ -427,16 +424,39 @@
       }catch(_){}
     }
 
-    // ✅ Error/Success también como clones
+    // ✅ MISMO TRATAMIENTO: One-shots como clones que NO se cortan
     function playOneShotClone(baseAudio, vol=0.7){
-      if (!audioUnlocked || !baseAudio) return;
+      if (!audioUnlocked || !baseAudio) return null;
+
       try{
         const a = baseAudio.cloneNode(true);
         a.volume = vol;
+
+        let cleaned = false;
+        const cleanup = () => {
+          if (cleaned) return;
+          cleaned = true;
+          try{ a.remove(); }catch(_){}
+        };
+
+        a.addEventListener("ended", cleanup, { once:true });
+
+        // fallback: usa duration cuando exista (no corta)
+        a.addEventListener("loadedmetadata", () => {
+          const d = Number.isFinite(a.duration) ? a.duration : 0;
+          if (d > 0){
+            setTimeout(cleanup, Math.ceil(d * 1000) + 800);
+          }
+        }, { once:true });
+
+        // fallback final por si todo falla
+        setTimeout(cleanup, 30000);
+
         a.play().catch(()=>{});
-        a.addEventListener("ended", () => { try{ a.remove(); }catch(_){ } });
-        setTimeout(() => { try{ a.pause(); a.remove(); }catch(_){ } }, 2000);
-      }catch(_){}
+        return a;
+      }catch(_){
+        return null;
+      }
     }
 
     // ==========================
@@ -511,7 +531,6 @@
       stopAudio(questionBgAudio);
       stopAudio(finalBgAudio);
 
-      // re-habilita botón por si hubo refresh/edge
       acceptBtn.removeAttribute("aria-disabled");
 
       await typeLines(INTRO_LINES, false, false);
@@ -567,7 +586,7 @@
     // ==========================
     // ANSWER CHECK
     // ==========================
-    function checkAnswer(){
+    async function checkAnswer(){
       if (stage !== "question") return;
 
       const user = normalizeAnswer(answerInput.value);
@@ -577,8 +596,13 @@
       }
 
       if (user === CORRECT_ANSWER_CANON){
-        playOneShotClone(successAudio, 0.75);
         answerInput.value = "";
+
+        // ✅ para que great no compita con countdown
+        stopAudio(questionBgAudio);
+
+        // ✅ great completo (no se corta) + final tipea en paralelo (con tack)
+        playOneShotClone(successAudio, 0.85);
         runFinal();
         return;
       }
@@ -606,29 +630,27 @@
       if (isTransitioning) return;
       isTransitioning = true;
 
-      // bloquea doble click
       acceptBtn.setAttribute("aria-disabled", "true");
 
       try{
-        await unlockAudio();   // ✅ desbloqueo estable (sin play/pause de todo)
-        await runQuestion();   // ✅ aquí inicia countdown
+        await unlockAudio();
+        await runQuestion();
       } finally {
-        // ya no se usa de nuevo, pero dejamos limpio
         isTransitioning = false;
       }
     });
 
-    submitBtn.addEventListener("click", (e) => {
+    submitBtn.addEventListener("click", async (e) => {
       e.preventDefault();
-      if (!audioUnlocked) unlockAudio();
-      checkAnswer();
+      if (!audioUnlocked) await unlockAudio();
+      await checkAnswer();
     });
 
-    answerInput.addEventListener("keydown", (e) => {
+    answerInput.addEventListener("keydown", async (e) => {
       if (e.key === "Enter"){
         e.preventDefault();
-        if (!audioUnlocked) unlockAudio();
-        checkAnswer();
+        if (!audioUnlocked) await unlockAudio();
+        await checkAnswer();
       }
     });
 
